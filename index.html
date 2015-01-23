@@ -1,0 +1,232 @@
+<html>
+<head>
+</head>
+<body>
+<script>
+var Module = {
+  print: function(x) {
+    console.log(x);
+  }
+};
+</script>
+<script src="data/test.js"></script>
+<script src="data/print.js"></script>
+<script src="vendor/lua/lua.vm.js"></script>
+<script>
+function loadFile(url, cb) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url, true);
+    xhr.responseType = 'blob';
+    xhr.onload = function(err) {
+        if (this.status == 200) {
+            var blob = this.response;
+            cb(null, blob);
+        } else {
+            cb(err);
+        }
+    };
+    xhr.send();
+}
+
+function loadDataUri(uri, cb) {
+  // convert base64 to raw binary data held in a string
+  // doesn't handle URLEncoded DataURIs - see SO answer #6850276 for code that does this
+  var byteString = atob(uri.split(',')[1]);
+
+  // separate out the mime component
+  var mimeString = uri.split(',')[0].split(':')[1].split(';')[0]
+
+  // write the bytes of the string to an ArrayBuffer
+  var ab = new ArrayBuffer(byteString.length);
+  var ia = new Uint8Array(ab);
+  for (var i = 0; i < byteString.length; i++) {
+      ia[i] = byteString.charCodeAt(i);
+  }
+
+  // write the ArrayBuffer to a blob, and you're done
+  var blob = new Blob([ab], {type: mimeString});
+  cb(null, blob);
+}
+
+Reader = function(arrayBuffer) {
+    var idx = 0;
+
+    var buffer = arrayBuffer;
+    var data = new Int8Array(arrayBuffer);
+    var reader = {};
+
+    reader.readShort = function() {
+        var tmp = new Int16Array(buffer.slice(idx, idx + 2));
+        idx += 2;
+        return tmp[0];
+        //return data[idx++] | (data[idx++] << 8);
+    };
+
+    reader.readInt = function() {
+        var tmp = new Int32Array(buffer.slice(idx, idx + 4));
+        idx += 4;
+        return tmp[0];
+        //return data[idx++] | (data[idx++] << 8) | (data[idx++] << 16) | (data[idx++] << 24);
+    };
+
+    reader.readByte = function() {
+        return data[idx++];
+    }
+
+    reader.readDouble = function() {
+        idx+=8;
+        return 0;
+    }
+
+    reader.readString = function() {
+        var result = "";
+        for (;;) {
+            var x = data[idx++];
+            if (x == 0)
+                break;
+            result += String.fromCharCode(x);
+        }
+        return result;
+    }
+
+    reader.seek = function(offset) {
+        idx = offset;
+    }
+
+    reader.readBuffer = function(len) {
+        return buffer.slice(idx, len);
+    }
+
+    return reader;
+};
+
+
+function loadCartidge(err, blob) {
+    var reader = new FileReader();
+    reader.onload = function(ev) {
+        var data = reader.result;
+
+        var r = Reader(data);
+
+        function checkHeader(r) {
+            var CART_ID = [0x02, 0x0a, 0x43, 0x41, 0x52, 0x54, 0x00];
+
+            if (data.bytelength < 8) {
+                return false;
+            }
+
+            for (var i = 0; i < CART_ID.length; i++) {
+                if (r.readByte() != CART_ID[i]) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        function scanOffsets(r) {
+            var files = r.readShort();
+            var offsets = [];
+            var ids = [];
+            for (var i = 0; i < files; i++) {
+                ids.push(r.readShort());
+                offsets.push(r.readInt());
+            }
+
+            return {
+                ids: ids,
+                offsets: offsets
+            };
+        }
+
+        function scanHeader(r) {
+
+            var header = {
+                len: r.readInt(),
+                latitude:  r.readDouble(),
+                longitude: r.readDouble(),
+                unknown0: r.readInt() + r.readInt(),
+                unknown1: r.readInt(),
+                unknown2: r.readInt(),
+                splashId: r.readShort(),
+                iconId: r.readShort(),
+                type: r.readString(),
+                member: r.readString(),
+                unknown3: r.readInt(),
+                unknown4: r.readInt(),
+                name: r.readString(),
+                guid: r.readString(),
+                description: r.readString(),
+                startDescription: r.readString(),
+                version: r.readString(),
+                author: r.readString(),
+                url: r.readString(),
+                device: r.readString(),
+                unknown5: r.readInt(),
+                code: r.readString()
+            };
+
+            return header;
+        }
+
+        function getByteCode(r, offset) {
+            r.seek(offset);
+            var len = r.readInt();
+            var buffer = r.readBuffer(len);
+            return buffer;
+        }
+
+        var valid = checkHeader(r);
+        console.log("valid", valid);
+
+        var offsetData = scanOffsets(r);
+        var ids = offsetData.ids;
+        var offsets = offsetData.offsets;
+
+        var header = scanHeader(r);
+        console.log(header);
+
+        var byteCode = getByteCode(r, offsets[0]);
+
+        console.log(byteCode.byteLength);
+
+
+        Lua.State.prototype.loadC = function(blob, name, mode) {
+            var chars = new Int8Array(new ArrayBuffer(blob));
+            if (this.loadbufferx(chars, chars.length, name, mode) !== 0) {
+                throw new Lua.Error(this, -1);
+            }
+            var r = new Lua.Proxy(this, -1);
+            this.pop(1);
+            return r;
+        };
+
+        loadDataUri(TestData2, function(err, blob) {
+            p = L.loadC(blob, "test", "b");
+            p();
+            /*
+            var a = new Int8Array(new ArrayBuffer(blob));
+
+            var res = L.loadbufferx(a, a.byteLength, "test", null);
+            console.log(res);
+            if (res === 0) {
+            var p = new Lua.Proxy(L, -1);
+            L.pop(1);
+            p.invoke();
+            }
+            */
+
+        });
+        //var res = L.loadbufferx(byteCode.byteLength, byteCode, byteCode.byteLength, null);
+
+    };
+    reader.readAsArrayBuffer(blob);
+}
+
+L.execute("print(\"foo\");");
+
+//loadFile("data/test.gwc", loadCartidge);
+loadDataUri(TestData, loadCartidge);
+</script>
+</body>
+</html>
